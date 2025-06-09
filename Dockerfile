@@ -1,24 +1,27 @@
-FROM python:3.9-slim
+# 1. Base image with Python 3.10 (slim for minimal size)
+FROM python:3.10-slim
 
-# Install ffmpeg (required by Demucs) and git (Demucs may pull models)
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ffmpeg git && \
-    rm -rf /var/lib/apt/lists/*
+# 2. Install system dependencies for Demucs:
+#    - git:     required by some models
+#    - ffmpeg:  for audio decoding/encoding
+RUN apt update && apt install -y git ffmpeg && \
+    apt clean && rm -rf /var/lib/apt/lists/*
 
+# 3. Install Demucs and DiffQ (required by the mdx_extra_q model)
+RUN pip install demucs diffq
+
+# 4. Set working directory for your app
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 5. Copy your backend code and dependencies list
+COPY . .
 
-COPY handler.py .
+# 6. Install Python dependencies from requirements.txt:
+#    Flask, boto3, python-dotenv
+RUN pip install -r requirements.txt
 
-# Env vars are injected at runtime
-ENV AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-ENV AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-ENV AWS_REGION=${AWS_REGION}
-ENV S3_BUCKET=${S3_BUCKET}
+# 7. Expose port 5000 so RunPod can route traffic
+EXPOSE 5000
 
-# Demucs listens via handler(), RunPod defaults to port 8080
-EXPOSE 8080
-
+# 8. Start your Flask handler on container launch
 CMD ["python", "handler.py"]
