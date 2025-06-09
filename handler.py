@@ -5,47 +5,63 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# S3 configuration
-bucket_name = os.getenv("S3_BUCKET")
+# Pull bucket from event (if present) or fall back to env
+DEFAULT_BUCKET = os.getenv("S3_BUCKET")
+
+# S3 client
 s3 = boto3.client(
     "s3",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
     aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
+    region_name=os.getenv("AWS_REGION"),
 )
 
-UPLOAD_FOLDER = "uploads"
-OUTPUT_FOLDER = "separated/mdx_extra_q"
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+# Where Demucs will write its outputs
+OUTPUT_BASE = "separated"
+MODEL = "mdx_extra_q"
+
+# Ensure our download/upload folders exist
+os.makedirs("uploads", exist_ok=True)
+os.makedirs(OUTPUT_BASE, exist_ok=True)
 
 def handler(event):
-    # Get the filename from event
-    filename = event.get("input", {}).get("filename")
+    """
+    event should be:
+      { "filename": "<key in S3>",  "bucket": "<optional bucket override>" }
+    """
+    filename = event.get("filename")
     if not filename:
-        return {"error": "No filename provided"}
+        return {"error": "No filename provided"}, 400
+
+    bucket = event.get("bucket", DEFAULT_BUCKET)
+    base, _ext = os.path.splitext(filename)
+    local_in = os.path.join("uploads", filename)
 
     try:
-        # Step 1: Download the file from S3
-        local_path = os.path.join(UPLOAD_FOLDER, filename)
-        s3.download_file(bucket_name, filename, local_path)
+        # 1) fetch from S3
+        s3.download_file(bucket, filename, local_in)
 
-        # Step 2: Run Demucs to separate stems
+        # 2) run Demucs
+        #    writes into separated/<MODEL>/<base>/*.mp3
         subprocess.run([
-            "demucs", local_path,
-            "-n", "mdx_extra_q",
-            "--mp3"
+            "demucs",
+            local_in,
+            "-n", MODEL,
+            "--mp3",
+            "--out", OUTPUT_BASE
         ], check=True)
 
-        # Step 3: Upload stems back to S3
-        base = os.path.splitext(filename)[0]
-        for stem in ["vocals", "drums", "bass", "other"]:
-            stem_path = f"{OUTPUT_FOLDER}/{base}/{stem}.mp3"
-            s3_key = f"{base}/{stem}.mp3"
-            s3.upload_file(stem_path, bucket_name, s3_key)
+        # 3) push each stem back
+        out_dir = os.path.join(OUTPUT_BASE, MODEL, base)
+        stems = ["vocals", "drums", "bass", "other"]
+        for stem in stems:
+            src = os.path.join(out_dir, f"{stem}.mp3")
+            dest_key = f"{base}/{stem}.mp3"
+            s3.upload_file(src, bucket, dest_key)
 
         return {"message": "Processing complete", "filename": filename}
 
     except subprocess.CalledProcessError as e:
-        return {"error": f"Demucs failed: {e}"}
+        return {"error": f"Demucs failed: {e}"}, 500
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e)}, 500
